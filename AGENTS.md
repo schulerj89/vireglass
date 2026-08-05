@@ -22,6 +22,42 @@
   unless explicitly asked.
 - Preserve unrelated user changes. Avoid drive-by formatting and refactors.
 
+## Target platform: iPhone and iPad
+
+- Vireglass is a touch-first web game for current iPhone and iPad Safari.
+  Desktop is a local development preview only, not a supported player target or
+  acceptance environment.
+- Design the playable surface for landscape. Portrait or an unusably narrow
+  viewport must present a clear rotate-to-play state rather than a broken HUD.
+- Do not make gameplay depend on a keyboard, mouse, hover state, or a fixed
+  desktop resolution. The canvas and HUD must react to the visual viewport,
+  orientation changes, and Safari safe-area insets.
+- The gameplay surface owns its touch gestures: prevent accidental page scroll,
+  text selection, zoom affordances, and browser gestures from interrupting play
+  where standards and Safari allow. Keep ordinary navigation and accessibility
+  behavior outside the play surface intact.
+- Use `WebGLRenderer` as the baseline renderer. Start from an iOS-safe quality
+  path: an explicit pixel-ratio cap, opaque materials where practical, no
+  Spark-era post-processing, reusable geometry/materials, and instancing for
+  repeated props. Tune numerical budgets from physical-device observations;
+  desktop numbers never prove iPhone or iPad performance.
+
+## 60 FPS delivery contract
+
+- The mobile performance goal is 60 FPS, expressed as a 16.7 ms frame-time
+  target. A visual feature is not complete merely because it looks correct in
+  a desktop preview.
+- Follow `docs/mobile-performance-contract.md`. It separates a lightweight
+  worker self-proof from the physical-device QA gate so workers can continue on
+  safe, independent work while QA validates the integrated scenario.
+- Instrument gameplay once the renderer exists: frame times, quality tier,
+  viewport/effective pixel ratio, renderer calls, triangles, geometries,
+  textures, active entities, and reset leaks. Record deltas for visual work.
+- Do not allocate render resources, compile materials, load textures, or build
+  unbounded object graphs in the frame loop. Pool transient effects and reuse
+  geometry/materials. Treat a new full-screen pass or broad transparent effect
+  as an explicit performance decision, not incidental polish.
+
 ## Three.js and assets
 
 - Prefer TypeScript plus code-first Three.js factories (`THREE.Group`) over
@@ -46,6 +82,15 @@
 - Performance is measured in the browser. Track renderer calls, triangles,
   geometries, textures, asset-load errors, and reset leaks when the renderer
   exists.
+- A desktop viewport emulation is useful for early functional checks, but a
+  mobile gameplay claim requires iPhone or iPad Safari evidence. Report which
+  kind of evidence was obtained.
+
+### Current shell commands
+
+- `npm install`
+- `npm run dev`
+- `npm run build`
 
 ## Decision escalation
 

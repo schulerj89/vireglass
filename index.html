@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#090d18" />
+    <title>Vireglass — Spark Shell</title>
+  </head>
+  <body>
+    <main id="game-root" aria-label="Vireglass game surface">
+      <canvas id="game-canvas"></canvas>
+      <section id="rotate-gate" aria-live="polite">
+        <div class="rotate-card">
+          <span class="rotate-icon" aria-hidden="true">↻</span>
+          <p>Rotate your device</p>
+          <small>Vireglass plays in landscape.</small>
+        </div>
+      </section>
+      <div id="dev-metrics" aria-hidden="true"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

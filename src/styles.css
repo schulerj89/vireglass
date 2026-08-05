@@ -1,0 +1,54 @@
+:root {
+  color: #e9f2ff;
+  background: #090d18;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #090d18; }
+body { overscroll-behavior: none; user-select: none; -webkit-user-select: none; }
+
+#game-root {
+  position: fixed;
+  inset: 0;
+  width: var(--visual-width, 100vw);
+  height: var(--visual-height, 100vh);
+  overflow: hidden;
+  touch-action: none;
+  background: #090d18;
+}
+
+#game-canvas { display: block; width: 100%; height: 100%; }
+
+#rotate-gate {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  background: rgba(9, 13, 24, 0.96);
+  text-align: center;
+}
+
+.is-rotate-required #rotate-gate { display: grid; }
+.rotate-card { max-width: 280px; }
+.rotate-icon { display: block; color: #65e6d2; font-size: 3rem; line-height: 1; }
+.rotate-card p { margin: 18px 0 8px; font-size: 1.15rem; font-weight: 700; }
+.rotate-card small { color: #a8b8d8; font-size: 0.9rem; }
+
+#dev-metrics {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  z-index: 2;
+  white-space: pre;
+  color: #b8c7e6;
+  background: rgba(6, 10, 19, 0.74);
+  border: 1px solid rgba(184, 199, 230, 0.24);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  pointer-events: none;
+}

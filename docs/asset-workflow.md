@@ -45,6 +45,12 @@ copy an existing game's recognizable model, texture, or brand identity.
 
 ## Runtime rules
 
+- Mobile Safari is the runtime budget authority. A desktop preview or a static
+  file-size estimate cannot establish that an asset is acceptable on iPhone or
+  iPad hardware.
+- Spark starts on a conservative WebGL path: capped effective pixel ratio,
+  opaque/simple materials where possible, no post-processing, and no large
+  transparent particle field. Add a visual cost only with measured value.
 - Repeated props share geometry and materials; use cloning or instancing rather
   than generating a new asset for every placement.
 - Static layout and primitive fallbacks load before optional visual detail.
@@ -53,6 +59,12 @@ copy an existing game's recognizable model, texture, or brand identity.
   and scene-reset leaks once renderer instrumentation exists.
 - Set per-scene numerical budgets from a measured browser baseline. Do not claim
   performance from static file size or a headless smoke test alone.
+- Record whether a runtime observation came from a simulated mobile viewport or
+  physical iPhone/iPad Safari. Physical-device evidence is required before a
+  player-facing mobile performance claim is accepted.
+- Follow the shared [mobile performance contract](mobile-performance-contract.md)
+  for the 60 FPS gate and the light-weight self-proof expected on each asset
+  change.
 
 ## First asset kit
 

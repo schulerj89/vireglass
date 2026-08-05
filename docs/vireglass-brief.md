@@ -6,6 +6,19 @@ Vireglass is a high-angle 3D action roguelite in which the player fights
 through living crystal fracture-sites that react to combat. Every run should
 feel readable, kinetic, and visibly transformed by the player's chosen build.
 
+## Platform: iPhone and iPad Safari
+
+Vireglass is made for Safari on current iPhone and iPad hardware, not for a
+desktop player. The game is landscape-first: portrait and too-narrow viewports
+should ask the player to rotate instead of trying to compress combat and the
+HUD into an unusable shape.
+
+All combat input must work through touch. The eventual controller needs clear
+movement, aiming/attacking, and dash affordances without relying on keyboard,
+mouse, or hover. Canvas and HUD layout must respect the live visual viewport
+and device safe areas. A desktop preview can help a worker build a feature, but
+only iPhone/iPad Safari evidence can validate player-facing mobile quality.
+
 ## World and end goal
 
 A damaged world-machine is turning its surroundings into Vireglass and
@@ -41,10 +54,17 @@ and beam lattices. The first playable needs only a few clear choices.
 Spark proves the minute-to-minute feel before a full run is built:
 
 - high-angle camera with a readable play-space;
-- movement, aim, dash, and one selected attack shape;
+- landscape touch movement, aim, dash, and one selected attack shape;
 - one enemy with an understandable chase/attack state;
 - one small procedural arena and a visible impact response;
-- a 60-second browser-playable loop with a captured proof.
+- a 60-second iPhone/iPad Safari-playable loop with a captured proof.
+
+## Selected Spark combat decision
+
+The initial attack is an **aimed shard-cast**. It must be readable from the
+high-angle camera, aimed through the touch control model, and leave a clear
+crystal impact response. The continuous beam and close-range fracture dash are
+deferred Refraction/weapon candidates, not first-Spark requirements.
 
 ## Milestone spine
 
@@ -68,5 +88,4 @@ the current loop works.
 
 ## Open decisions
 
-- The initial attack shape: aimed shard-cast, continuous beam, or close-range fracture dash.
 - The exact visual language for the first fracture-site and the player silhouette.
