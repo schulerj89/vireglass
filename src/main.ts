@@ -29,8 +29,15 @@ import {
   createCrystalImpactPool,
   type CrystalImpact,
 } from './game/world/crystalImpact';
+import {
+  createChaserState,
+  stepChaserState,
+  type ChaserConfig,
+  type ChaserState,
+} from './game/enemy/chaserState';
 import { createSparkArena } from './game/world/sparkArena';
 import { clampSparkArenaCircleToBounds } from './game/world/sparkArenaCollision';
+import { createSparkSpawnCandidates } from './game/world/sparkSpawnPoints';
 import './styles.css';
 
 const root = document.querySelector<HTMLElement>('#game-root');
@@ -70,6 +77,17 @@ const SHARD_LAUNCH_INTERVAL_SECONDS = 0.3;
 const SHARD_COLLISION_MARGIN = 0.2;
 const CRYSTAL_IMPACT_POOL_CAPACITY = 4;
 const CRYSTAL_IMPACT_LIFETIME_STEPS = 11;
+// Conservative bounded enemy slice: three preallocated chasers, with no
+// respawn, randomness, health, damage, or additional enemy types.
+const CHASER_CAPACITY = 3;
+const CHASER_RADIUS = 0.38;
+const CHASER_STEP_CONFIG: ChaserConfig = Object.freeze({
+  chaseSpeed: 1.35,
+  attackRange: 1.2,
+  windupDurationSeconds: 0.28,
+  strikeDurationSeconds: 0.12,
+  recoveryDurationSeconds: 0.42,
+});
 const PLAYER_STEP_CONFIG: PlayerStepConfig = Object.freeze({
   moveSpeed: 4.2,
   dashSpeed: 10.5,
@@ -126,8 +144,29 @@ playerVisual.position.set(
 );
 scene.add(playerVisual);
 
-// Five arena renderables plus the player mesh are the baseline active entities.
-const baselineEntityCount = sparkArena.group.children.length + playerVisual.children.length;
+type ChaserSlot = {
+  state: ChaserState;
+  readonly mesh: THREE.Mesh;
+};
+
+const chaserGeometry = new THREE.OctahedronGeometry(0.42, 0);
+const chaserMaterial = new THREE.MeshBasicMaterial({ color: '#ff7185' });
+const chaserSpawnCandidates = createSparkSpawnCandidates(sparkArena.metadata, CHASER_CAPACITY);
+const chaserSlots: ChaserSlot[] = chaserSpawnCandidates.candidates.map((candidate, index) => {
+  const mesh = new THREE.Mesh(chaserGeometry, chaserMaterial);
+  mesh.name = `spark-chaser-${index}`;
+  mesh.position.set(candidate.x, CHASER_RADIUS, candidate.z);
+  scene.add(mesh);
+  return {
+    state: createChaserState({ x: candidate.x, z: candidate.z }),
+    mesh,
+  };
+});
+
+// Arena renderables, player, and the fixed chaser slice are baseline active entities.
+const baselineEntityCount = sparkArena.group.children.length
+  + playerVisual.children.length
+  + chaserSlots.length;
 
 type ShardSlot = {
   state: AimedShardCastState | null;
@@ -180,6 +219,13 @@ type DevMetrics = MobileRunMetricsSnapshot & {
     readonly impactPoolCapacity: number;
     readonly lastImpactCause: string;
   };
+  readonly enemy: {
+    readonly activeChasers: number;
+    readonly chaserCap: number;
+    readonly spawnFingerprint: string;
+    readonly strikeEvents: number;
+    readonly chaserClamps: number;
+  };
   readonly arena: {
     readonly requestedSeed: string;
     readonly normalizedSeed: string;
@@ -220,6 +266,7 @@ const playerIntent: WritablePlayerIntent = {
   dashRequested: false,
 };
 const clampedPlayerPosition = { x: sparkArena.metadata.playerSpawn.x, z: sparkArena.metadata.playerSpawn.z };
+const clampedChaserPosition = { x: 0, z: 0 };
 
 let playerState: PlayerState = {
   position: { x: sparkArena.metadata.playerSpawn.x, z: sparkArena.metadata.playerSpawn.z },
@@ -237,6 +284,8 @@ let castsLaunched = 0;
 let impactsEmitted = 0;
 let lastImpactCause = 'none';
 let shardLaunchCooldownSeconds = 0;
+let strikeEvents = 0;
+let chaserClamps = 0;
 let lastFrameAt = runStartedAt;
 let nextDevMetricsAt = runStartedAt;
 let latestMetrics: DevMetrics | undefined;
@@ -381,8 +430,34 @@ function advanceSimulation(): void {
 
   if (dashCouldStart && playerState.dashRemainingSeconds > 0) dashExecutions += 1;
   if (clamped) collisionClamps += 1;
+  stepChasers();
   stepCombat();
   totalFixedSteps += 1;
+}
+
+function stepChasers(): void {
+  for (const slot of chaserSlots) {
+    const stepped = stepChaserState(
+      slot.state,
+      { targetPosition: playerState.position },
+      CHASER_STEP_CONFIG,
+      FIXED_STEP_SECONDS,
+    );
+    const clamped = clampSparkArenaCircleToBounds(
+      sparkArena.metadata,
+      stepped.state.position,
+      CHASER_RADIUS,
+      clampedChaserPosition,
+    );
+    slot.state = clamped
+      ? { ...stepped.state, position: { x: clampedChaserPosition.x, z: clampedChaserPosition.z } }
+      : stepped.state;
+    if (clamped) chaserClamps += 1;
+    if (stepped.event) strikeEvents += 1;
+
+    slot.mesh.position.set(slot.state.position.x, CHASER_RADIUS, slot.state.position.z);
+    slot.mesh.scale.setScalar(slot.state.phase === 'windup' ? 1.15 : slot.state.phase === 'strike' ? 1.3 : 1);
+  }
 }
 
 function stepCombat(): void {
@@ -499,6 +574,13 @@ function collectDevMetrics(now: number): DevMetrics {
       impactPoolCapacity: CRYSTAL_IMPACT_POOL_CAPACITY,
       lastImpactCause,
     },
+    enemy: {
+      activeChasers: chaserSlots.length,
+      chaserCap: CHASER_CAPACITY,
+      spawnFingerprint: chaserSpawnCandidates.fingerprint,
+      strikeEvents,
+      chaserClamps,
+    },
     arena: {
       requestedSeed: SPARK_ARENA_SEED,
       normalizedSeed: sparkArena.metadata.seed,
@@ -519,6 +601,7 @@ function drawDevMetrics(metrics: DevMetrics): void {
     `calls ${metrics.latestCounters.calls} | tris ${metrics.latestCounters.triangles} | geo ${metrics.latestCounters.geometries} | tex ${metrics.latestCounters.textures}`,
     `entities ${metrics.latestCounters.activeEntities} | resets ${metrics.latestCounters.sceneResetCount} (${metrics.resetStability.status})`,
     `shards ${metrics.combat.activeProjectiles} active / ${metrics.combat.castsLaunched} launched | impacts ${metrics.combat.impactsEmitted} emitted, ${metrics.combat.activeImpacts}/${metrics.combat.impactPoolCapacity} active (${metrics.combat.lastImpactCause})`,
+    `chasers ${metrics.enemy.activeChasers}/${metrics.enemy.chaserCap} | strikes ${metrics.enemy.strikeEvents} | clamps ${metrics.enemy.chaserClamps} | ${metrics.enemy.spawnFingerprint}`,
     `sample ${(metrics.sampleMs / 1000).toFixed(0)}s | tier ${metrics.qualityTier}`,
     `arena ${metrics.arena.requestedSeed} | ${metrics.arena.fingerprint}`,
   ].join('\n');
