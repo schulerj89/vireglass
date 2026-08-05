@@ -18,6 +18,17 @@ import {
   type PlayerState,
   type PlayerStepConfig,
 } from './game/player/playerState';
+import {
+  createAimedShardCast,
+  stepAimedShardCast,
+  type AimedShardCastState,
+  type ShardCollision,
+  type ShardCollisionSweep,
+} from './game/combat/aimedShardCast';
+import {
+  createCrystalImpactPool,
+  type CrystalImpact,
+} from './game/world/crystalImpact';
 import { createSparkArena } from './game/world/sparkArena';
 import { clampSparkArenaCircleToBounds } from './game/world/sparkArenaCollision';
 import './styles.css';
@@ -51,6 +62,14 @@ const MAX_FRAME_DELTA_SECONDS = 0.1;
 const MAX_FIXED_STEPS_PER_FRAME = 6;
 const PLAYER_RADIUS = 0.45;
 const DEV_METRICS_INTERVAL_MS = 250;
+const SHARD_POOL_CAPACITY = 4;
+const SHARD_SPEED = 13;
+const SHARD_MAX_RANGE = 9;
+const SHARD_MAX_LIFETIME_SECONDS = 0.75;
+const SHARD_LAUNCH_INTERVAL_SECONDS = 0.3;
+const SHARD_COLLISION_MARGIN = 0.2;
+const CRYSTAL_IMPACT_POOL_CAPACITY = 4;
+const CRYSTAL_IMPACT_LIFETIME_STEPS = 11;
 const PLAYER_STEP_CONFIG: PlayerStepConfig = Object.freeze({
   moveSpeed: 4.2,
   dashSpeed: 10.5,
@@ -107,8 +126,30 @@ playerVisual.position.set(
 );
 scene.add(playerVisual);
 
-// Five arena renderables plus the player mesh are the active scene renderables.
-const activeEntityCount = sparkArena.group.children.length + playerVisual.children.length;
+// Five arena renderables plus the player mesh are the baseline active entities.
+const baselineEntityCount = sparkArena.group.children.length + playerVisual.children.length;
+
+type ShardSlot = {
+  state: AimedShardCastState | null;
+  readonly mesh: THREE.Mesh;
+};
+
+type ActiveImpact = {
+  readonly effect: CrystalImpact;
+  expiresAtStep: number;
+};
+
+const shardGeometry = new THREE.SphereGeometry(0.12, 6, 4);
+const shardMaterial = new THREE.MeshBasicMaterial({ color: '#fff0a6' });
+const shardSlots: ShardSlot[] = Array.from({ length: SHARD_POOL_CAPACITY }, (_, index) => {
+  const mesh = new THREE.Mesh(shardGeometry, shardMaterial);
+  mesh.name = `spark-shard-${index}`;
+  mesh.visible = false;
+  scene.add(mesh);
+  return { state: null, mesh };
+});
+const crystalImpactPool = createCrystalImpactPool(CRYSTAL_IMPACT_POOL_CAPACITY);
+const activeImpacts: ActiveImpact[] = [];
 
 type MutableRenderCounters = {
   -readonly [Key in keyof MobileRenderObjectCounters]: MobileRenderObjectCounters[Key];
@@ -130,6 +171,14 @@ type DevMetrics = MobileRunMetricsSnapshot & {
     readonly fixedSteps: number;
     readonly dashExecutions: number;
     readonly collisionClamps: number;
+  };
+  readonly combat: {
+    readonly castsLaunched: number;
+    readonly impactsEmitted: number;
+    readonly activeProjectiles: number;
+    readonly activeImpacts: number;
+    readonly impactPoolCapacity: number;
+    readonly lastImpactCause: string;
   };
   readonly arena: {
     readonly requestedSeed: string;
@@ -161,7 +210,7 @@ const renderCounters: MutableRenderCounters = {
   lines: 0,
   geometries: 0,
   textures: 0,
-  activeEntities: activeEntityCount,
+  activeEntities: baselineEntityCount,
   sceneResetCount: 0,
 };
 
@@ -184,6 +233,10 @@ let simulationAccumulator = 0;
 let totalFixedSteps = 0;
 let dashExecutions = 0;
 let collisionClamps = 0;
+let castsLaunched = 0;
+let impactsEmitted = 0;
+let lastImpactCause = 'none';
+let shardLaunchCooldownSeconds = 0;
 let lastFrameAt = runStartedAt;
 let nextDevMetricsAt = runStartedAt;
 let latestMetrics: DevMetrics | undefined;
@@ -302,6 +355,7 @@ function handlePointerEnd(event: PointerEvent): void {
 
 function advanceSimulation(): void {
   touchIntentState = stepTouchIntent(touchIntentState, playerIntent);
+  shardLaunchCooldownSeconds = Math.max(0, shardLaunchCooldownSeconds - FIXED_STEP_SECONDS);
   const dashCouldStart = playerIntent.dashRequested
     && playerState.dashRemainingSeconds <= 0
     && playerState.dashCooldownRemainingSeconds <= 0;
@@ -327,7 +381,75 @@ function advanceSimulation(): void {
 
   if (dashCouldStart && playerState.dashRemainingSeconds > 0) dashExecutions += 1;
   if (clamped) collisionClamps += 1;
+  stepCombat();
   totalFixedSteps += 1;
+}
+
+function stepCombat(): void {
+  if (Math.hypot(playerIntent.aim.x, playerIntent.aim.z) > 0 && shardLaunchCooldownSeconds <= 0) {
+    const slot = shardSlots.find((candidate) => candidate.state === null);
+    if (slot) {
+      slot.state = createAimedShardCast(
+        playerState.position,
+        playerIntent.aim,
+        { speed: SHARD_SPEED, maxRange: SHARD_MAX_RANGE, maxLifetimeSeconds: SHARD_MAX_LIFETIME_SECONDS },
+      );
+      slot.mesh.visible = slot.state.active;
+      shardLaunchCooldownSeconds = SHARD_LAUNCH_INTERVAL_SECONDS;
+      if (slot.state.active) castsLaunched += 1;
+    }
+  }
+
+  for (const slot of shardSlots) {
+    if (!slot.state) continue;
+    const stepped = stepAimedShardCast(slot.state, FIXED_STEP_SECONDS, queryArenaCollision);
+    slot.state = stepped.state.active ? stepped.state : null;
+    slot.mesh.position.set(stepped.state.position.x, PLAYER_RADIUS * 0.8, stepped.state.position.z);
+    slot.mesh.visible = stepped.state.active;
+    if (stepped.impact) consumeImpact(stepped.impact.position.x, stepped.impact.position.z, stepped.impact.cause);
+  }
+
+  for (let index = activeImpacts.length - 1; index >= 0; index -= 1) {
+    if (totalFixedSteps + 1 < activeImpacts[index].expiresAtStep) continue;
+    const [expired] = activeImpacts.splice(index, 1);
+    crystalImpactPool.release(expired.effect);
+  }
+}
+
+function consumeImpact(x: number, z: number, cause: string): void {
+  impactsEmitted += 1;
+  lastImpactCause = cause;
+  if (activeImpacts.length >= CRYSTAL_IMPACT_POOL_CAPACITY) {
+    const oldest = activeImpacts.shift();
+    if (oldest) crystalImpactPool.release(oldest.effect);
+  }
+  const effect = crystalImpactPool.acquire({ seed: `impact:${impactsEmitted}` });
+  if (!effect) return;
+  effect.activate(x, PLAYER_RADIUS * 0.55, z);
+  activeImpacts.push({ effect, expiresAtStep: totalFixedSteps + CRYSTAL_IMPACT_LIFETIME_STEPS });
+}
+
+function queryArenaCollision(sweep: ShardCollisionSweep): ShardCollision | null {
+  const minX = arenaBounds.minX + SHARD_COLLISION_MARGIN;
+  const maxX = arenaBounds.maxX - SHARD_COLLISION_MARGIN;
+  const minZ = arenaBounds.minZ + SHARD_COLLISION_MARGIN;
+  const maxZ = arenaBounds.maxZ - SHARD_COLLISION_MARGIN;
+  let bestFraction = Infinity;
+
+  if (sweep.end.x < minX && sweep.end.x !== sweep.start.x) {
+    bestFraction = Math.min(bestFraction, (minX - sweep.start.x) / (sweep.end.x - sweep.start.x));
+  } else if (sweep.end.x > maxX && sweep.end.x !== sweep.start.x) {
+    bestFraction = Math.min(bestFraction, (maxX - sweep.start.x) / (sweep.end.x - sweep.start.x));
+  }
+  if (sweep.end.z < minZ && sweep.end.z !== sweep.start.z) {
+    bestFraction = Math.min(bestFraction, (minZ - sweep.start.z) / (sweep.end.z - sweep.start.z));
+  } else if (sweep.end.z > maxZ && sweep.end.z !== sweep.start.z) {
+    bestFraction = Math.min(bestFraction, (maxZ - sweep.start.z) / (sweep.end.z - sweep.start.z));
+  }
+
+  return Number.isFinite(bestFraction) && bestFraction >= 0 && bestFraction <= 1
+    ? { fraction: bestFraction, targetId: 'arena-boundary' }
+    : null;
 }
 
 function syncPlayerVisual(): void {
@@ -343,6 +465,9 @@ function updateRenderCounters(): void {
   renderCounters.lines = renderer.info.render.lines;
   renderCounters.geometries = renderer.info.memory.geometries;
   renderCounters.textures = renderer.info.memory.textures;
+  renderCounters.activeEntities = baselineEntityCount
+    + shardSlots.reduce((count, slot) => count + (slot.state ? 1 : 0), 0)
+    + activeImpacts.length;
 }
 
 function collectDevMetrics(now: number): DevMetrics {
@@ -366,6 +491,14 @@ function collectDevMetrics(now: number): DevMetrics {
       dashExecutions,
       collisionClamps,
     },
+    combat: {
+      castsLaunched,
+      impactsEmitted,
+      activeProjectiles: shardSlots.reduce((count, slot) => count + (slot.state ? 1 : 0), 0),
+      activeImpacts: activeImpacts.length,
+      impactPoolCapacity: CRYSTAL_IMPACT_POOL_CAPACITY,
+      lastImpactCause,
+    },
     arena: {
       requestedSeed: SPARK_ARENA_SEED,
       normalizedSeed: sparkArena.metadata.seed,
@@ -385,6 +518,7 @@ function drawDevMetrics(metrics: DevMetrics): void {
     `slow streak ${metrics.frameTimes.consecutiveSlowFrames} / max ${metrics.frameTimes.longestSlowFrameStreak}`,
     `calls ${metrics.latestCounters.calls} | tris ${metrics.latestCounters.triangles} | geo ${metrics.latestCounters.geometries} | tex ${metrics.latestCounters.textures}`,
     `entities ${metrics.latestCounters.activeEntities} | resets ${metrics.latestCounters.sceneResetCount} (${metrics.resetStability.status})`,
+    `shards ${metrics.combat.activeProjectiles} active / ${metrics.combat.castsLaunched} launched | impacts ${metrics.combat.impactsEmitted} emitted, ${metrics.combat.activeImpacts}/${metrics.combat.impactPoolCapacity} active (${metrics.combat.lastImpactCause})`,
     `sample ${(metrics.sampleMs / 1000).toFixed(0)}s | tier ${metrics.qualityTier}`,
     `arena ${metrics.arena.requestedSeed} | ${metrics.arena.fingerprint}`,
   ].join('\n');
