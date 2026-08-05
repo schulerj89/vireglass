@@ -9,6 +9,20 @@
   <body>
     <main id="game-root" aria-label="Vireglass game surface">
       <canvas id="game-canvas"></canvas>
+      <section id="touch-hud" aria-hidden="true">
+        <div class="touch-control touch-control--move">
+          <span class="touch-stick"></span>
+          <span class="touch-control__caption">Move</span>
+        </div>
+        <div class="touch-control touch-control--aim">
+          <span class="touch-aim-mark"></span>
+          <span class="touch-control__caption">Aim</span>
+        </div>
+        <div class="touch-dash">
+          <span class="touch-dash__mark"></span>
+          <span>Dash</span>
+        </div>
+      </section>
       <section id="rotate-gate" aria-live="polite">
         <div class="rotate-card">
           <span class="rotate-icon" aria-hidden="true">↻</span>
