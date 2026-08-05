@@ -35,6 +35,11 @@ import {
   type ChaserConfig,
   type ChaserState,
 } from './game/enemy/chaserState';
+import {
+  applyChaserShardHit,
+  createChaserVitality,
+  type ChaserVitalityState,
+} from './game/enemy/chaserVitality';
 import { createSparkArena } from './game/world/sparkArena';
 import { clampSparkArenaCircleToBounds } from './game/world/sparkArenaCollision';
 import { createSparkSpawnCandidates } from './game/world/sparkSpawnPoints';
@@ -74,6 +79,7 @@ const SHARD_SPEED = 13;
 const SHARD_MAX_RANGE = 9;
 const SHARD_MAX_LIFETIME_SECONDS = 0.75;
 const SHARD_LAUNCH_INTERVAL_SECONDS = 0.3;
+const SHARD_RADIUS = 0.12;
 const SHARD_COLLISION_MARGIN = 0.2;
 const CRYSTAL_IMPACT_POOL_CAPACITY = 4;
 const CRYSTAL_IMPACT_LIFETIME_STEPS = 11;
@@ -81,6 +87,8 @@ const CRYSTAL_IMPACT_LIFETIME_STEPS = 11;
 // respawn, randomness, health, damage, or additional enemy types.
 const CHASER_CAPACITY = 3;
 const CHASER_RADIUS = 0.38;
+const CHASER_HIT_RADIUS = CHASER_RADIUS + SHARD_RADIUS;
+const CHASER_MAX_HEALTH = 1;
 const CHASER_STEP_CONFIG: ChaserConfig = Object.freeze({
   chaseSpeed: 1.35,
   attackRange: 1.2,
@@ -146,6 +154,7 @@ scene.add(playerVisual);
 
 type ChaserSlot = {
   state: ChaserState;
+  vitality: ChaserVitalityState;
   readonly mesh: THREE.Mesh;
 };
 
@@ -159,14 +168,14 @@ const chaserSlots: ChaserSlot[] = chaserSpawnCandidates.candidates.map((candidat
   scene.add(mesh);
   return {
     state: createChaserState({ x: candidate.x, z: candidate.z }),
+    vitality: createChaserVitality({ maxHealth: CHASER_MAX_HEALTH }),
     mesh,
   };
 });
 
-// Arena renderables, player, and the fixed chaser slice are baseline active entities.
-const baselineEntityCount = sparkArena.group.children.length
-  + playerVisual.children.length
-  + chaserSlots.length;
+// Arena renderables and player are always active; chasers remain preallocated
+// but defeated slots leave the active render count and simulation.
+const baselineStaticEntityCount = sparkArena.group.children.length + playerVisual.children.length;
 
 type ShardSlot = {
   state: AimedShardCastState | null;
@@ -178,7 +187,7 @@ type ActiveImpact = {
   expiresAtStep: number;
 };
 
-const shardGeometry = new THREE.SphereGeometry(0.12, 6, 4);
+const shardGeometry = new THREE.SphereGeometry(SHARD_RADIUS, 6, 4);
 const shardMaterial = new THREE.MeshBasicMaterial({ color: '#fff0a6' });
 const shardSlots: ShardSlot[] = Array.from({ length: SHARD_POOL_CAPACITY }, (_, index) => {
   const mesh = new THREE.Mesh(shardGeometry, shardMaterial);
@@ -224,6 +233,8 @@ type DevMetrics = MobileRunMetricsSnapshot & {
     readonly chaserCap: number;
     readonly spawnFingerprint: string;
     readonly strikeEvents: number;
+    readonly hitEvents: number;
+    readonly defeatEvents: number;
     readonly chaserClamps: number;
   };
   readonly arena: {
@@ -256,7 +267,7 @@ const renderCounters: MutableRenderCounters = {
   lines: 0,
   geometries: 0,
   textures: 0,
-  activeEntities: baselineEntityCount,
+  activeEntities: baselineStaticEntityCount + chaserSlots.length,
   sceneResetCount: 0,
 };
 
@@ -286,6 +297,8 @@ let lastImpactCause = 'none';
 let shardLaunchCooldownSeconds = 0;
 let strikeEvents = 0;
 let chaserClamps = 0;
+let chaserHitEvents = 0;
+let chaserDefeatEvents = 0;
 let lastFrameAt = runStartedAt;
 let nextDevMetricsAt = runStartedAt;
 let latestMetrics: DevMetrics | undefined;
@@ -437,6 +450,7 @@ function advanceSimulation(): void {
 
 function stepChasers(): void {
   for (const slot of chaserSlots) {
+    if (slot.vitality.defeated) continue;
     const stepped = stepChaserState(
       slot.state,
       { targetPosition: playerState.position },
@@ -481,7 +495,14 @@ function stepCombat(): void {
     slot.state = stepped.state.active ? stepped.state : null;
     slot.mesh.position.set(stepped.state.position.x, PLAYER_RADIUS * 0.8, stepped.state.position.z);
     slot.mesh.visible = stepped.state.active;
-    if (stepped.impact) consumeImpact(stepped.impact.position.x, stepped.impact.position.z, stepped.impact.cause);
+    if (stepped.impact) {
+      consumeImpact(
+        stepped.impact.position.x,
+        stepped.impact.position.z,
+        stepped.impact.cause,
+        stepped.impact.targetId,
+      );
+    }
   }
 
   for (let index = activeImpacts.length - 1; index >= 0; index -= 1) {
@@ -491,9 +512,23 @@ function stepCombat(): void {
   }
 }
 
-function consumeImpact(x: number, z: number, cause: string): void {
+function consumeImpact(x: number, z: number, cause: string, targetId?: string | number): void {
   impactsEmitted += 1;
   lastImpactCause = cause;
+  if (cause === 'collision' && typeof targetId === 'string' && targetId.startsWith('chaser:')) {
+    const chaserIndex = Number(targetId.slice('chaser:'.length));
+    const slot = Number.isInteger(chaserIndex) ? chaserSlots[chaserIndex] : undefined;
+    if (slot && !slot.vitality.defeated) {
+      const transition = applyChaserShardHit(slot.vitality, { damage: 1 });
+      slot.vitality = transition.state;
+      if (transition.event?.type === 'chaser-hit') chaserHitEvents += 1;
+      if (transition.event?.type === 'chaser-defeat') {
+        chaserDefeatEvents += 1;
+        slot.mesh.visible = false;
+        slot.mesh.scale.setScalar(1);
+      }
+    }
+  }
   if (activeImpacts.length >= CRYSTAL_IMPACT_POOL_CAPACITY) {
     const oldest = activeImpacts.shift();
     if (oldest) crystalImpactPool.release(oldest.effect);
@@ -522,9 +557,56 @@ function queryArenaCollision(sweep: ShardCollisionSweep): ShardCollision | null 
     bestFraction = Math.min(bestFraction, (maxZ - sweep.start.z) / (sweep.end.z - sweep.start.z));
   }
 
+  let bestTargetId: string | undefined = 'arena-boundary';
+  for (let index = 0; index < chaserSlots.length; index += 1) {
+    const slot = chaserSlots[index];
+    if (slot.vitality.defeated) continue;
+    const fraction = segmentCircleFraction(
+      sweep.start.x,
+      sweep.start.z,
+      sweep.end.x,
+      sweep.end.z,
+      slot.state.position.x,
+      slot.state.position.z,
+      CHASER_HIT_RADIUS,
+    );
+    if (fraction !== null && fraction < bestFraction) {
+      bestFraction = fraction;
+      bestTargetId = `chaser:${index}`;
+    }
+  }
+
   return Number.isFinite(bestFraction) && bestFraction >= 0 && bestFraction <= 1
-    ? { fraction: bestFraction, targetId: 'arena-boundary' }
+    ? { fraction: bestFraction, targetId: bestTargetId }
     : null;
+}
+
+function segmentCircleFraction(
+  startX: number,
+  startZ: number,
+  endX: number,
+  endZ: number,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+): number | null {
+  const deltaX = endX - startX;
+  const deltaZ = endZ - startZ;
+  const offsetX = startX - centerX;
+  const offsetZ = startZ - centerZ;
+  const radiusSquared = radius * radius;
+  const startDistanceSquared = offsetX * offsetX + offsetZ * offsetZ;
+  if (startDistanceSquared <= radiusSquared) return 0;
+
+  const coefficientA = deltaX * deltaX + deltaZ * deltaZ;
+  if (coefficientA <= 0) return null;
+  const coefficientB = 2 * (offsetX * deltaX + offsetZ * deltaZ);
+  const coefficientC = startDistanceSquared - radiusSquared;
+  const discriminant = coefficientB * coefficientB - 4 * coefficientA * coefficientC;
+  if (discriminant < 0) return null;
+
+  const root = (-coefficientB - Math.sqrt(discriminant)) / (2 * coefficientA);
+  return root >= 0 && root <= 1 ? root : null;
 }
 
 function syncPlayerVisual(): void {
@@ -540,7 +622,8 @@ function updateRenderCounters(): void {
   renderCounters.lines = renderer.info.render.lines;
   renderCounters.geometries = renderer.info.memory.geometries;
   renderCounters.textures = renderer.info.memory.textures;
-  renderCounters.activeEntities = baselineEntityCount
+  renderCounters.activeEntities = baselineStaticEntityCount
+    + chaserSlots.reduce((count, slot) => count + (slot.vitality.defeated ? 0 : 1), 0)
     + shardSlots.reduce((count, slot) => count + (slot.state ? 1 : 0), 0)
     + activeImpacts.length;
 }
@@ -575,10 +658,12 @@ function collectDevMetrics(now: number): DevMetrics {
       lastImpactCause,
     },
     enemy: {
-      activeChasers: chaserSlots.length,
+      activeChasers: chaserSlots.reduce((count, slot) => count + (slot.vitality.defeated ? 0 : 1), 0),
       chaserCap: CHASER_CAPACITY,
       spawnFingerprint: chaserSpawnCandidates.fingerprint,
       strikeEvents,
+      hitEvents: chaserHitEvents,
+      defeatEvents: chaserDefeatEvents,
       chaserClamps,
     },
     arena: {
@@ -601,7 +686,7 @@ function drawDevMetrics(metrics: DevMetrics): void {
     `calls ${metrics.latestCounters.calls} | tris ${metrics.latestCounters.triangles} | geo ${metrics.latestCounters.geometries} | tex ${metrics.latestCounters.textures}`,
     `entities ${metrics.latestCounters.activeEntities} | resets ${metrics.latestCounters.sceneResetCount} (${metrics.resetStability.status})`,
     `shards ${metrics.combat.activeProjectiles} active / ${metrics.combat.castsLaunched} launched | impacts ${metrics.combat.impactsEmitted} emitted, ${metrics.combat.activeImpacts}/${metrics.combat.impactPoolCapacity} active (${metrics.combat.lastImpactCause})`,
-    `chasers ${metrics.enemy.activeChasers}/${metrics.enemy.chaserCap} | strikes ${metrics.enemy.strikeEvents} | clamps ${metrics.enemy.chaserClamps} | ${metrics.enemy.spawnFingerprint}`,
+    `chasers ${metrics.enemy.activeChasers}/${metrics.enemy.chaserCap} | hits ${metrics.enemy.hitEvents}, defeats ${metrics.enemy.defeatEvents} | strikes ${metrics.enemy.strikeEvents} | clamps ${metrics.enemy.chaserClamps} | ${metrics.enemy.spawnFingerprint}`,
     `sample ${(metrics.sampleMs / 1000).toFixed(0)}s | tier ${metrics.qualityTier}`,
     `arena ${metrics.arena.requestedSeed} | ${metrics.arena.fingerprint}`,
   ].join('\n');
