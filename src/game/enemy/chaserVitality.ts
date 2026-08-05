@@ -38,7 +38,6 @@ export interface ChaserVitalityTransition {
 }
 
 const DEFAULT_MAX_HEALTH = 1;
-const EPSILON = 0.000001;
 
 /** Creates a finite, strictly positive health pool for one chaser. */
 export function createChaserVitality(config: ChaserVitalityConfig): ChaserVitalityState {
@@ -66,7 +65,7 @@ export function applyChaserShardHit(
   }
 
   const health = Math.max(0, current.health - damage);
-  if (health <= EPSILON) {
+  if (health <= 0) {
     const defeated: ChaserVitalityState = {
       ...current,
       health: 0,
@@ -102,7 +101,7 @@ function sanitizeState(state: ChaserVitalityState): ChaserVitalityState {
   return {
     maxHealth,
     health,
-    defeated: state?.defeated === true || health <= EPSILON,
+    defeated: state?.defeated === true || health <= 0,
   };
 }
 
