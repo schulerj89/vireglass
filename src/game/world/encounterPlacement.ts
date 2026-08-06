@@ -132,7 +132,8 @@ function isEligibleCandidate(
 
   const deltaX = candidate.x - playerSpawn.x;
   const deltaZ = candidate.z - playerSpawn.z;
-  return deltaX * deltaX + deltaZ * deltaZ > playerSafeRadius * playerSafeRadius;
+  // Math.hypot avoids squared-distance underflow/overflow for finite inputs.
+  return Math.hypot(deltaX, deltaZ) > playerSafeRadius;
 }
 
 function noneResult(
