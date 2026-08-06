@@ -77,7 +77,11 @@ export function stepPlayerVitality(
   const safeState = sanitizeState(state, safeConfig);
   const timerWasActive = safeState.invulnerabilityRemainingSeconds > 0;
   const elapsedTimer = timerWasActive
-    ? Math.max(0, safeState.invulnerabilityRemainingSeconds - safeConfig.fixedStepSeconds)
+    ? normalizeElapsedTimer(
+        safeState.invulnerabilityRemainingSeconds - safeConfig.fixedStepSeconds,
+        safeState.invulnerabilityRemainingSeconds,
+        safeConfig.fixedStepSeconds,
+      )
     : 0;
 
   if (safeState.terminal || timerWasActive) {
@@ -165,6 +169,17 @@ function finiteOrZero(value: unknown): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeElapsedTimer(elapsed: number, previous: number, step: number): number {
+  if (elapsed <= 0) {
+    return 0;
+  }
+  if (step === 0) {
+    return elapsed;
+  }
+  const roundingTolerance = Number.EPSILON * Math.max(1, Math.abs(previous), Math.abs(step)) * 2;
+  return elapsed <= roundingTolerance ? 0 : elapsed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
