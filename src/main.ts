@@ -71,6 +71,10 @@ import {
   type EncounterDirectorState,
 } from './game/world/encounterDirector';
 import { resolveEncounterPlacement } from './game/world/encounterPlacement';
+import {
+  createSurvivalHud,
+  type SurvivalHud,
+} from './game/ui/survivalHud';
 import './styles.css';
 
 const root = document.querySelector<HTMLElement>('#game-root');
@@ -356,6 +360,7 @@ let playerState: PlayerState = {
 };
 let playerVitality: PlayerVitalityState = createPlayerVitalityState(PLAYER_VITALITY_CONFIG);
 let encounterDirectorState: EncounterDirectorState = createEncounterDirectorState();
+const survivalHud: SurvivalHud = createSurvivalHud(gameRoot, restartRun);
 let touchIntentState: TouchIntentState = INITIAL_TOUCH_INTENT_STATE;
 let simulationAccumulator = 0;
 let totalFixedSteps = 0;
@@ -381,6 +386,82 @@ function viewportSize(): { width: number; height: number } {
     width: Math.max(1, Math.round(viewport?.width ?? window.innerWidth)),
     height: Math.max(1, Math.round(viewport?.height ?? window.innerHeight)),
   };
+}
+
+function createInitialPlayerState(): PlayerState {
+  return {
+    position: { x: sparkArena.metadata.playerSpawn.x, z: sparkArena.metadata.playerSpawn.z },
+    facing: { x: 0, z: 1 },
+    dashDirection: { x: 0, z: 1 },
+    dashRemainingSeconds: 0,
+    dashCooldownRemainingSeconds: 0,
+  };
+}
+
+function restartRun(): void {
+  for (const activeImpact of activeImpacts.splice(0)) {
+    crystalImpactPool.release(activeImpact.effect);
+  }
+  for (const slot of shardSlots) {
+    slot.state = null;
+    slot.mesh.visible = false;
+  }
+  for (let index = 0; index < chaserSlots.length; index += 1) {
+    const slot = chaserSlots[index];
+    const candidate = chaserSpawnCandidates.candidates[index];
+    slot.active = false;
+    slot.state = createChaserState({ x: candidate.x, z: candidate.z });
+    slot.vitality = createChaserVitality({ maxHealth: CHASER_MAX_HEALTH });
+    slot.mesh.position.set(candidate.x, CHASER_RADIUS, candidate.z);
+    slot.mesh.visible = false;
+    slot.mesh.scale.setScalar(1);
+  }
+
+  playerState = createInitialPlayerState();
+  playerVitality = createPlayerVitalityState(PLAYER_VITALITY_CONFIG);
+  encounterDirectorState = createEncounterDirectorState();
+  touchIntentState = INITIAL_TOUCH_INTENT_STATE;
+  playerIntent.movement.x = 0;
+  playerIntent.movement.z = 0;
+  playerIntent.aim.x = 0;
+  playerIntent.aim.z = 0;
+  playerIntent.dashRequested = false;
+  simulationAccumulator = 0;
+  totalFixedSteps = 0;
+  dashExecutions = 0;
+  collisionClamps = 0;
+  castsLaunched = 0;
+  impactsEmitted = 0;
+  lastImpactCause = 'none';
+  shardLaunchCooldownSeconds = 0;
+  strikeEvents = 0;
+  chaserClamps = 0;
+  chaserHitEvents = 0;
+  chaserDefeatEvents = 0;
+  playerHitEvents = 0;
+  playerTerminalEvents = 0;
+  renderCounters.sceneResetCount += 1;
+  lastFrameAt = performance.now();
+  syncPlayerVisual();
+  updateSurvivalHud();
+}
+
+function updateSurvivalHud(): void {
+  survivalHud.update({
+    vitality: playerVitality.vitality,
+    maxVitality: PLAYER_VITALITY_CONFIG.maxVitality,
+    invulnerabilityRemainingSeconds: playerVitality.invulnerabilityRemainingSeconds,
+    terminal: playerVitality.terminal,
+    wave: Math.floor(Math.max(0, encounterDirectorState.spawnCount - 1) / CHASER_CAPACITY) + 1,
+    activeEncounters: encounterDirectorState.activeCount,
+    encounterCap: ENCOUNTER_DIRECTOR_CONFIG.maxActiveEncounters,
+  });
+}
+
+function handleKeyDown(event: KeyboardEvent): void {
+  if (event.key.toLowerCase() !== 'r') return;
+  event.preventDefault();
+  restartRun();
 }
 
 function cappedDevicePixelRatio(): number {
@@ -608,7 +689,7 @@ function stepPlayerContact(): void {
       slot.state.position.x - playerState.position.x,
       slot.state.position.z - playerState.position.z,
     );
-    if (distance > CHASER_RADIUS + PLAYER_RADIUS) continue;
+    if (distance > CHASER_STEP_CONFIG.attackRange + PLAYER_RADIUS) continue;
     candidates.push({
       damage: 1,
       attackerId: `chaser:${index}`,
@@ -882,6 +963,7 @@ function frame(now: number): void {
   }
 
   syncPlayerVisual();
+  updateSurvivalHud();
   renderer.render(scene, camera);
   updateRenderCounters();
   runMetrics.recordFrame(frameDeltaSeconds * 1000, renderCounters);
@@ -911,6 +993,7 @@ gameRoot.addEventListener('touchmove', (event) => event.preventDefault(), { pass
 gameRoot.addEventListener('gesturestart', (event) => event.preventDefault());
 gameRoot.addEventListener('gesturechange', (event) => event.preventDefault());
 gameRoot.addEventListener('gestureend', (event) => event.preventDefault());
+window.addEventListener('keydown', handleKeyDown);
 window.addEventListener('resize', resize, { passive: true });
 window.visualViewport?.addEventListener('resize', resize, { passive: true });
 window.visualViewport?.addEventListener('scroll', resize, { passive: true });

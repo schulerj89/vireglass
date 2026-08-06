@@ -22,6 +22,137 @@ body { overscroll-behavior: none; user-select: none; -webkit-user-select: none; 
 
 #game-canvas { display: block; width: 100%; height: 100%; }
 
+#survival-hud {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 5;
+  display: grid;
+  width: min(300px, calc(100vw - 28px));
+  gap: 7px;
+  padding: 13px 15px 14px;
+  border: 1px solid rgba(156, 220, 255, 0.38);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(13, 25, 49, 0.94), rgba(7, 14, 28, 0.86));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24), inset 0 0 22px rgba(98, 180, 255, 0.06);
+  color: #e9f6ff;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.survival-hud__topline,
+.survival-hud__health-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.survival-hud__eyebrow,
+.survival-hud__title,
+.survival-hud__wave,
+.survival-hud__label,
+.survival-hud__health-value,
+.survival-hud__status,
+.survival-hud__encounters { margin: 0; }
+
+.survival-hud__eyebrow {
+  color: #8ca8ca;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+}
+
+.survival-hud__title {
+  margin-top: 2px;
+  color: #bffef2;
+  font-size: 0.88rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.survival-hud__wave {
+  color: #ffd38d;
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.survival-hud__label,
+.survival-hud__health-value,
+.survival-hud__encounters {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.survival-hud__label,
+.survival-hud__encounters { color: #a4b7d6; }
+.survival-hud__health-value { color: #dffeff; }
+
+.survival-hud__bar {
+  height: 11px;
+  overflow: hidden;
+  border: 1px solid rgba(157, 226, 255, 0.38);
+  border-radius: 999px;
+  background: rgba(4, 11, 24, 0.8);
+}
+
+.survival-hud__bar-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #65e6d2, #b9fff1);
+  box-shadow: 0 0 14px rgba(101, 230, 210, 0.42);
+  transition: width 120ms linear, background 120ms linear;
+}
+
+.survival-hud__status {
+  color: #65e6d2;
+  font-size: 0.69rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.survival-hud.is-damaged { border-color: rgba(255, 204, 118, 0.74); }
+.survival-hud.is-damaged .survival-hud__status { color: #ffd47f; }
+.survival-hud.is-damaged .survival-hud__bar-fill {
+  background: linear-gradient(90deg, #ffc26f, #fff1b3);
+  box-shadow: 0 0 16px rgba(255, 193, 92, 0.5);
+}
+
+.survival-hud.is-defeated {
+  border-color: rgba(255, 113, 133, 0.84);
+  background: linear-gradient(145deg, rgba(62, 17, 35, 0.96), rgba(21, 10, 25, 0.94));
+}
+
+.survival-hud.is-defeated .survival-hud__title,
+.survival-hud.is-defeated .survival-hud__status { color: #ff8da1; }
+.survival-hud.is-defeated .survival-hud__bar-fill { background: #ff7185; box-shadow: none; }
+
+.survival-hud__restart {
+  display: none;
+  min-height: 34px;
+  margin-top: 2px;
+  border: 1px solid rgba(255, 141, 161, 0.72);
+  border-radius: 7px;
+  background: rgba(255, 113, 133, 0.14);
+  color: #ffe9ed;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.survival-hud__restart:hover,
+.survival-hud__restart:focus-visible { background: rgba(255, 113, 133, 0.3); outline: 2px solid #ffb2bf; outline-offset: 2px; }
+.survival-hud.is-defeated .survival-hud__restart { display: block; }
+
 #touch-hud {
   --hud-safe-left: max(16px, calc(env(safe-area-inset-left) + 12px));
   --hud-safe-right: max(16px, calc(env(safe-area-inset-right) + 12px));
@@ -184,7 +315,8 @@ body { overscroll-behavior: none; user-select: none; -webkit-user-select: none; 
 
 .is-rotate-required #rotate-gate { display: grid; }
 .is-rotate-required #touch-hud,
-.is-rotate-required #dev-metrics { display: none; }
+.is-rotate-required #dev-metrics,
+.is-rotate-required #survival-hud { display: none; }
 .rotate-card { max-width: 280px; }
 .rotate-icon { display: block; color: #65e6d2; font-size: 3rem; line-height: 1; }
 .rotate-card p { margin: 18px 0 8px; font-size: 1.15rem; font-weight: 700; }
@@ -208,5 +340,6 @@ body { overscroll-behavior: none; user-select: none; -webkit-user-select: none; 
 @media (orientation: portrait), (max-width: 639px), (max-aspect-ratio: 27 / 20) {
   #rotate-gate { display: grid; }
   #touch-hud,
-  #dev-metrics { display: none; }
+  #dev-metrics,
+  #survival-hud { display: none; }
 }
