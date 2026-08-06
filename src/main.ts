@@ -50,9 +50,27 @@ import {
   createChaserVitality,
   type ChaserVitalityState,
 } from './game/enemy/chaserVitality';
+import {
+  resolveContactHit,
+  type ContactHitCandidate,
+} from './game/combat/contactHitResolver';
+import {
+  createPlayerVitalityState,
+  stepPlayerVitality,
+  type PlayerVitalityConfig,
+  type PlayerVitalityState,
+} from './game/player/playerVitality';
 import { createSparkArena } from './game/world/sparkArena';
 import { clampSparkArenaCircleToBounds } from './game/world/sparkArenaCollision';
 import { createSparkSpawnCandidates } from './game/world/sparkSpawnPoints';
+import {
+  createEncounterDirectorState,
+  releaseEncounterDirectorActive,
+  stepEncounterDirector,
+  type EncounterDirectorConfig,
+  type EncounterDirectorState,
+} from './game/world/encounterDirector';
+import { resolveEncounterPlacement } from './game/world/encounterPlacement';
 import './styles.css';
 
 const root = document.querySelector<HTMLElement>('#game-root');
@@ -100,6 +118,16 @@ const CHASER_CAPACITY = 3;
 const CHASER_RADIUS = 0.38;
 const CHASER_HIT_RADIUS = CHASER_RADIUS + SHARD_RADIUS;
 const CHASER_MAX_HEALTH = 1;
+const PLAYER_VITALITY_CONFIG: PlayerVitalityConfig = Object.freeze({
+  maxVitality: 3,
+  invulnerabilitySeconds: 0.5,
+  fixedStepSeconds: FIXED_STEP_SECONDS,
+});
+const ENCOUNTER_DIRECTOR_CONFIG: EncounterDirectorConfig = Object.freeze({
+  spawnIntervalSeconds: 1,
+  maxActiveEncounters: CHASER_CAPACITY,
+  maxEventsPerStep: 1,
+});
 const CHASER_STEP_CONFIG: ChaserConfig = Object.freeze({
   chaseSpeed: 1.35,
   attackRange: 1.2,
@@ -178,6 +206,7 @@ const playerVisualResourceStats = getSparkPlayerVisualResourceStats();
 const crystalClusterResourceStats = getCrystalClusterResourceStats();
 
 type ChaserSlot = {
+  active: boolean;
   state: ChaserState;
   vitality: ChaserVitalityState;
   readonly mesh: THREE.Mesh;
@@ -190,8 +219,10 @@ const chaserSlots: ChaserSlot[] = chaserSpawnCandidates.candidates.map((candidat
   const mesh = new THREE.Mesh(chaserGeometry, chaserMaterial);
   mesh.name = `spark-chaser-${index}`;
   mesh.position.set(candidate.x, CHASER_RADIUS, candidate.z);
+  mesh.visible = false;
   scene.add(mesh);
   return {
+    active: false,
     state: createChaserState({ x: candidate.x, z: candidate.z }),
     vitality: createChaserVitality({ maxHealth: CHASER_MAX_HEALTH }),
     mesh,
@@ -304,7 +335,7 @@ const renderCounters: MutableRenderCounters = {
   lines: 0,
   geometries: 0,
   textures: 0,
-  activeEntities: baselineStaticEntityCount + chaserSlots.length,
+  activeEntities: baselineStaticEntityCount + chaserSlots.reduce((count, slot) => count + (slot.active ? 1 : 0), 0),
   sceneResetCount: 0,
 };
 
@@ -323,6 +354,8 @@ let playerState: PlayerState = {
   dashRemainingSeconds: 0,
   dashCooldownRemainingSeconds: 0,
 };
+let playerVitality: PlayerVitalityState = createPlayerVitalityState(PLAYER_VITALITY_CONFIG);
+let encounterDirectorState: EncounterDirectorState = createEncounterDirectorState();
 let touchIntentState: TouchIntentState = INITIAL_TOUCH_INTENT_STATE;
 let simulationAccumulator = 0;
 let totalFixedSteps = 0;
@@ -336,6 +369,8 @@ let strikeEvents = 0;
 let chaserClamps = 0;
 let chaserHitEvents = 0;
 let chaserDefeatEvents = 0;
+let playerHitEvents = 0;
+let playerTerminalEvents = 0;
 let lastFrameAt = runStartedAt;
 let nextDevMetricsAt = runStartedAt;
 let latestMetrics: DevMetrics | undefined;
@@ -496,14 +531,49 @@ function advanceSimulation(): void {
 
   if (dashCouldStart && playerState.dashRemainingSeconds > 0) dashExecutions += 1;
   if (clamped) collisionClamps += 1;
+  stepEncounters();
   stepChasers();
+  stepPlayerContact();
   stepCombat();
   totalFixedSteps += 1;
 }
 
+function stepEncounters(): void {
+  const stepped = stepEncounterDirector(
+    encounterDirectorState,
+    ENCOUNTER_DIRECTOR_CONFIG,
+    FIXED_STEP_SECONDS,
+  );
+  encounterDirectorState = stepped.state;
+
+  for (const event of stepped.events) {
+    const slot = chaserSlots.find((candidate) => !candidate.active);
+    const placement = resolveEncounterPlacement({
+      candidates: chaserSpawnCandidates.candidates,
+      world: {
+        bounds: arenaBounds,
+        playerSpawn: sparkArena.metadata.playerSpawn,
+        playerSafeRadius: sparkArena.metadata.spawnSafeRadius,
+      },
+      encounterOrdinal: event.ordinal,
+    });
+    if (!slot || placement.kind !== 'placement') {
+      encounterDirectorState = releaseEncounterDirectorActive(encounterDirectorState, 1);
+      continue;
+    }
+
+    slot.active = true;
+    slot.state = createChaserState({ x: placement.position.x, z: placement.position.z });
+    slot.vitality = createChaserVitality({ maxHealth: CHASER_MAX_HEALTH });
+    slot.mesh.position.set(placement.position.x, CHASER_RADIUS, placement.position.z);
+    slot.mesh.visible = true;
+    slot.mesh.scale.setScalar(1);
+  }
+}
+
 function stepChasers(): void {
   for (const slot of chaserSlots) {
-    if (slot.vitality.defeated) continue;
+    if (!slot.active || slot.vitality.defeated) continue;
     const stepped = stepChaserState(
       slot.state,
       { targetPosition: playerState.position },
@@ -525,6 +595,39 @@ function stepChasers(): void {
     slot.mesh.position.set(slot.state.position.x, CHASER_RADIUS, slot.state.position.z);
     slot.mesh.scale.setScalar(slot.state.phase === 'windup' ? 1.15 : slot.state.phase === 'strike' ? 1.3 : 1);
   }
+}
+
+function stepPlayerContact(): void {
+  const candidates: ContactHitCandidate[] = [];
+  for (let index = 0; index < chaserSlots.length; index += 1) {
+    const slot = chaserSlots[index];
+    if (!slot.active || slot.vitality.defeated) continue;
+    if (slot.state.phase !== 'strike') continue;
+
+    const distance = Math.hypot(
+      slot.state.position.x - playerState.position.x,
+      slot.state.position.z - playerState.position.z,
+    );
+    if (distance > CHASER_RADIUS + PLAYER_RADIUS) continue;
+    candidates.push({
+      damage: 1,
+      attackerId: `chaser:${index}`,
+      strikeId: `${totalFixedSteps}:${index}`,
+    });
+  }
+
+  const resolution = resolveContactHit(candidates, {
+    eligible: !playerVitality.terminal,
+    invulnerabilityRemainingSeconds: playerVitality.invulnerabilityRemainingSeconds,
+  });
+  const transition = stepPlayerVitality(
+    playerVitality,
+    resolution.event ? { damage: resolution.event.damage } : null,
+    PLAYER_VITALITY_CONFIG,
+  );
+  playerVitality = transition.state;
+  if (transition.event?.type === 'player-hit') playerHitEvents += 1;
+  if (transition.event?.type === 'player-terminal') playerTerminalEvents += 1;
 }
 
 function stepCombat(): void {
@@ -577,6 +680,8 @@ function consumeImpact(x: number, z: number, cause: string, targetId?: string | 
       if (transition.event?.type === 'chaser-hit') chaserHitEvents += 1;
       if (transition.event?.type === 'chaser-defeat') {
         chaserDefeatEvents += 1;
+        slot.active = false;
+        encounterDirectorState = releaseEncounterDirectorActive(encounterDirectorState, 1);
         slot.mesh.visible = false;
         slot.mesh.scale.setScalar(1);
       }
@@ -613,7 +718,7 @@ function queryArenaCollision(sweep: ShardCollisionSweep): ShardCollision | null 
   let bestTargetId: string | undefined = 'arena-boundary';
   for (let index = 0; index < chaserSlots.length; index += 1) {
     const slot = chaserSlots[index];
-    if (slot.vitality.defeated) continue;
+    if (!slot.active || slot.vitality.defeated) continue;
     const fraction = segmentCircleFraction(
       sweep.start.x,
       sweep.start.z,
@@ -676,7 +781,7 @@ function updateRenderCounters(): void {
   renderCounters.geometries = renderer.info.memory.geometries;
   renderCounters.textures = renderer.info.memory.textures;
   renderCounters.activeEntities = baselineStaticEntityCount
-    + chaserSlots.reduce((count, slot) => count + (slot.vitality.defeated ? 0 : 1), 0)
+    + chaserSlots.reduce((count, slot) => count + (slot.active && !slot.vitality.defeated ? 1 : 0), 0)
     + shardSlots.reduce((count, slot) => count + (slot.state ? 1 : 0), 0)
     + activeImpacts.length;
 }
@@ -711,7 +816,7 @@ function collectDevMetrics(now: number): DevMetrics {
       lastImpactCause,
     },
     enemy: {
-      activeChasers: chaserSlots.reduce((count, slot) => count + (slot.vitality.defeated ? 0 : 1), 0),
+      activeChasers: chaserSlots.reduce((count, slot) => count + (slot.active && !slot.vitality.defeated ? 1 : 0), 0),
       chaserCap: CHASER_CAPACITY,
       spawnFingerprint: chaserSpawnCandidates.fingerprint,
       strikeEvents,
