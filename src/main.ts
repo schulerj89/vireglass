@@ -30,6 +30,16 @@ import {
   type CrystalImpact,
 } from './game/world/crystalImpact';
 import {
+  createCrystalCluster,
+  getCrystalClusterResourceStats,
+  type CrystalCluster,
+} from './game/world/crystalCluster';
+import {
+  createSparkPlayerVisual,
+  getSparkPlayerVisualResourceStats,
+  type SparkPlayerVisual,
+} from './game/player/sparkPlayerVisual';
+import {
   createChaserState,
   stepChaserState,
   type ChaserConfig,
@@ -83,6 +93,7 @@ const SHARD_RADIUS = 0.12;
 const SHARD_COLLISION_MARGIN = 0.2;
 const CRYSTAL_IMPACT_POOL_CAPACITY = 4;
 const CRYSTAL_IMPACT_LIFETIME_STEPS = 11;
+const CRYSTAL_CLUSTER_CAPACITY = 3;
 // Conservative bounded enemy slice: three preallocated chasers, with no
 // respawn, randomness, health, damage, or additional enemy types.
 const CHASER_CAPACITY = 3;
@@ -135,22 +146,36 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const ambient = new THREE.HemisphereLight('#b9d4ff', '#19213b', 1.8);
 scene.add(ambient);
 
-// The player is a single opaque mesh that points along the group's +Z axis.
-const playerGeometry = new THREE.ConeGeometry(0.46, 0.9, 5);
-const playerMaterial = new THREE.MeshBasicMaterial({ color: '#ffd27a' });
-const playerMesh = new THREE.Mesh(playerGeometry, playerMaterial);
-playerMesh.rotation.x = Math.PI * 0.5;
-playerMesh.position.y = PLAYER_RADIUS;
-
+// Keep the existing facing wrapper so the factory-built opaque silhouette can
+// preserve its seeded local orientation while the simulation rotates the actor.
 const playerVisual = new THREE.Group();
 playerVisual.name = 'spark-player';
-playerVisual.add(playerMesh);
+const playerVisualAsset: SparkPlayerVisual = createSparkPlayerVisual({ seed: SPARK_ARENA_SEED });
+playerVisual.add(playerVisualAsset.group);
 playerVisual.position.set(
   sparkArena.metadata.playerSpawn.x,
   sparkArena.metadata.playerSpawn.y,
   sparkArena.metadata.playerSpawn.z,
 );
 scene.add(playerVisual);
+
+const crystalClusterAnchors = Object.freeze([
+  Object.freeze({ x: 0.18, z: 0.22 }),
+  Object.freeze({ x: 0.82, z: 0.24 }),
+  Object.freeze({ x: 0.5, z: 0.8 }),
+]);
+const crystalClusters: readonly CrystalCluster[] = crystalClusterAnchors.map((anchor, index) => {
+  const cluster = createCrystalCluster({ seed: `${SPARK_ARENA_SEED}:cluster:${index}` });
+  const position = boundedClusterPosition(anchor.x, anchor.z, cluster.proxyBounds.radius);
+  cluster.group.position.set(position.x, 0, position.z);
+  scene.add(cluster.group);
+  return cluster;
+});
+const crystalClusterFingerprints = Object.freeze(
+  crystalClusters.map((cluster) => cluster.metadata.fingerprint),
+);
+const playerVisualResourceStats = getSparkPlayerVisualResourceStats();
+const crystalClusterResourceStats = getCrystalClusterResourceStats();
 
 type ChaserSlot = {
   state: ChaserState;
@@ -173,9 +198,11 @@ const chaserSlots: ChaserSlot[] = chaserSpawnCandidates.candidates.map((candidat
   };
 });
 
-// Arena renderables and player are always active; chasers remain preallocated
+// Arena renderables, player, and bounded clusters are always active; chasers remain preallocated
 // but defeated slots leave the active render count and simulation.
-const baselineStaticEntityCount = sparkArena.group.children.length + playerVisual.children.length;
+const baselineStaticEntityCount = sparkArena.group.children.length
+  + playerVisual.children.length
+  + crystalClusters.length;
 
 type ShardSlot = {
   state: AimedShardCastState | null;
@@ -241,6 +268,16 @@ type DevMetrics = MobileRunMetricsSnapshot & {
     readonly requestedSeed: string;
     readonly normalizedSeed: string;
     readonly fingerprint: string;
+  };
+  readonly visual: {
+    readonly playerFingerprint: string;
+    readonly playerProxyRadius: number;
+    readonly clusterCount: number;
+    readonly clusterFingerprints: readonly string[];
+    readonly playerResourceGeometryCount: number;
+    readonly playerResourceMaterialCount: number;
+    readonly clusterResourceGeometryCount: number;
+    readonly clusterResourceMaterialCount: number;
   };
 };
 
@@ -313,6 +350,22 @@ function viewportSize(): { width: number; height: number } {
 
 function cappedDevicePixelRatio(): number {
   return Math.min(window.devicePixelRatio || 1, QUALITY.maxDevicePixelRatio);
+}
+
+function boundedClusterPosition(
+  normalizedX: number,
+  normalizedZ: number,
+  proxyRadius: number,
+): { readonly x: number; readonly z: number } {
+  const safeRadius = Math.max(0, Number.isFinite(proxyRadius) ? proxyRadius : 0);
+  const minX = arenaBounds.minX + safeRadius;
+  const maxX = arenaBounds.maxX - safeRadius;
+  const minZ = arenaBounds.minZ + safeRadius;
+  const maxZ = arenaBounds.maxZ - safeRadius;
+  return {
+    x: minX + (maxX - minX) * Math.min(1, Math.max(0, normalizedX)),
+    z: minZ + (maxZ - minZ) * Math.min(1, Math.max(0, normalizedZ)),
+  };
 }
 
 function resize(): void {
@@ -671,6 +724,16 @@ function collectDevMetrics(now: number): DevMetrics {
       normalizedSeed: sparkArena.metadata.seed,
       fingerprint: sparkArena.metadata.fingerprint,
     },
+    visual: {
+      playerFingerprint: playerVisualAsset.metadata.fingerprint,
+      playerProxyRadius: playerVisualAsset.proxyBounds.radius,
+      clusterCount: crystalClusters.length,
+      clusterFingerprints: crystalClusterFingerprints,
+      playerResourceGeometryCount: playerVisualResourceStats.geometryCount,
+      playerResourceMaterialCount: playerVisualResourceStats.materialCount,
+      clusterResourceGeometryCount: crystalClusterResourceStats.geometryCount,
+      clusterResourceMaterialCount: crystalClusterResourceStats.materialCount,
+    },
   };
 }
 
@@ -687,6 +750,7 @@ function drawDevMetrics(metrics: DevMetrics): void {
     `entities ${metrics.latestCounters.activeEntities} | resets ${metrics.latestCounters.sceneResetCount} (${metrics.resetStability.status})`,
     `shards ${metrics.combat.activeProjectiles} active / ${metrics.combat.castsLaunched} launched | impacts ${metrics.combat.impactsEmitted} emitted, ${metrics.combat.activeImpacts}/${metrics.combat.impactPoolCapacity} active (${metrics.combat.lastImpactCause})`,
     `chasers ${metrics.enemy.activeChasers}/${metrics.enemy.chaserCap} | hits ${metrics.enemy.hitEvents}, defeats ${metrics.enemy.defeatEvents} | strikes ${metrics.enemy.strikeEvents} | clamps ${metrics.enemy.chaserClamps} | ${metrics.enemy.spawnFingerprint}`,
+    `visual ${metrics.visual.playerFingerprint} proxy ${metrics.visual.playerProxyRadius.toFixed(2)} | clusters ${metrics.visual.clusterCount} | shared geo/mat player ${metrics.visual.playerResourceGeometryCount}/${metrics.visual.playerResourceMaterialCount}, clusters ${metrics.visual.clusterResourceGeometryCount}/${metrics.visual.clusterResourceMaterialCount}`,
     `sample ${(metrics.sampleMs / 1000).toFixed(0)}s | tier ${metrics.qualityTier}`,
     `arena ${metrics.arena.requestedSeed} | ${metrics.arena.fingerprint}`,
   ].join('\n');
