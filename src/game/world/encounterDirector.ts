@@ -96,7 +96,9 @@ export function stepEncounterDirector(
   const safeState = sanitizeState(state);
   const safeConfig = normalizeEncounterDirectorConfig(config);
   const stepSeconds = clamp(finiteOrZero(deltaSeconds), 0, MAX_FIXED_STEP_SECONDS);
-  let nextSpawnInSeconds = Math.max(0, safeState.nextSpawnInSeconds - stepSeconds);
+  // Keep a negative remainder so short intervals can catch up every due
+  // opportunity that fits in this bounded step.
+  let nextSpawnInSeconds = safeState.nextSpawnInSeconds - stepSeconds;
   let activeCount = safeState.activeCount;
   let spawnCount = safeState.spawnCount;
   const events: EncounterSpawnEvent[] = [];
@@ -114,8 +116,10 @@ export function stepEncounterDirector(
     }));
     activeCount += 1;
     spawnCount += 1;
-    nextSpawnInSeconds = safeConfig.spawnIntervalSeconds;
-    if (safeConfig.spawnIntervalSeconds > EPSILON) break;
+    // Add the interval to the current remainder instead of resetting it. A
+    // short interval can therefore produce several due opportunities in one
+    // capped step, while maxEventsPerStep still bounds the output.
+    nextSpawnInSeconds += safeConfig.spawnIntervalSeconds;
   }
 
   return Object.freeze({
